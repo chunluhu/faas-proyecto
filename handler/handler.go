@@ -3,6 +3,7 @@ package handler
 import (
     "context"
     "fmt"
+    "strings"
     "github.com/redis/go-redis/v9"
     "github.com/nats-io/nats.go"
 )
@@ -24,7 +25,7 @@ func InitConnections() {
 }
 
 func RegisterFunction(name string, code string) {
-    luaCode := fmt.Sprintf("return function(arg) %s return arg end", code)
+    luaCode := fmt.Sprintf("return function(ARGV) %s end", code)
     err := redisClient.Set(ctx, name, luaCode, 0).Err()
     if err != nil {
         fmt.Println("Error storing function in Redis:", err)
@@ -33,12 +34,19 @@ func RegisterFunction(name string, code string) {
     }
 }
 
-func PublishMessage(subject, msg string) {
-    if err := natsConn.Publish(subject, []byte(msg)); err != nil {
-        fmt.Println("Failed to publish message:", err)
-    } else {
-        fmt.Println("Message published to", subject)
+func CallFunction(name string, args ...string) string {
+    code, err := redisClient.Get(ctx, name).Result()
+    if err == redis.Nil {
+        return "Function not found"
+    } else if err != nil {
+        return "Error retrieving function from Redis"
     }
+
+    result, err := redisClient.Eval(ctx, code, []string{}, args).Result()
+    if err != nil {
+        return "Error executing function"
+    }
+    return fmt.Sprintf("%v", result)
 }
 
 func DeregisterFunction(name string) {
@@ -61,43 +69,36 @@ func CheckFunctionExists(name string) bool {
     return exists > 0
 }
 
-func CallFunction(name string, arg string) {
-    code, err := redisClient.Get(ctx, name).Result()
-    if err == redis.Nil {
-        fmt.Println("Function", name, "not found in Redis")
-        return
-    } else if err != nil {
-        fmt.Println("Error retrieving function from Redis:", err)
-        return
-    }
-    script := fmt.Sprintf("%s('%s')", code, arg)
-    result, err := redisClient.Eval(ctx, script, []string{}).Result()
+func ListFunctions() []string {
+    keys, err := redisClient.Keys(ctx, "*").Result()
     if err != nil {
-        fmt.Println("Error executing function:", err)
-        return
+        fmt.Println("Error retrieving function list:", err)
+        return nil
     }
-    fmt.Println("Execution result:", result)
+    fmt.Println("Stored Functions:", keys)
+    return keys
+}
+
+func PublishMessage(subject, msg string) {
+    if err := natsConn.Publish(subject, []byte(msg)); err != nil {
+        fmt.Println("Failed to publish message:", err)
+    } else {
+        fmt.Println("Message published to", subject)
+    }
 }
 
 func SubscribeInvoke() {
     _, err := natsConn.QueueSubscribe("invoke.>", "function_workers", func(msg *nats.Msg) {
         functionName := msg.Subject[len("invoke."):]
         arg := string(msg.Data)
-        fmt.Println("Received request to invoke function:", functionName, "with arg:", arg)
-        CallFunction(functionName, arg)
+        argList := strings.Split(arg, ",")
+        fmt.Println("Received request to invoke function:", functionName, "with args:", argList)
+        result := CallFunction(functionName, argList...)
+        fmt.Println("Function Response:", result)
     })
     if err != nil {
         fmt.Println("NATS subscription error:", err)
         return
     }
     select {}
-}
-
-func ListFunctions() {
-    keys, err := redisClient.Keys(ctx, "*").Result()
-    if err != nil {
-        fmt.Println("Error retrieving function list:", err)
-        return
-    }
-    fmt.Println("Stored Functions:", keys)
 }

@@ -1,32 +1,57 @@
 package main
 
 import (
-    "fmt"
-    "time"
     "faas-proyecto/handler"
+    "github.com/gin-gonic/gin"
+    "net/http"
 )
 
 func main() {
     handler.InitConnections()
-    handler.ListFunctions()
+    r := gin.Default()
 
-    handler.DeregisterFunction("exampleFunc")
+    r.POST("/func/register", func(c *gin.Context) {
+        var req struct {
+            Name string `json:"name"`
+            Code string `json:"code"`
+        }
+        if err := c.BindJSON(&req); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+            return
+        }
+        handler.RegisterFunction(req.Name, req.Code)
+        c.JSON(http.StatusOK, gin.H{"message": "Function registered successfully"})
+    })
 
-    exists := handler.CheckFunctionExists("exampleFunc")
-    if exists {
-        fmt.Println("Function still exists in Redis. Deletion failed!")
-    } else {
-        fmt.Println("Function deleted successfully!")
-    }
+    r.POST("/func/invoke", func(c *gin.Context) {
+        var req struct {
+            Name string   `json:"name"`
+            Args []string `json:"args"`
+        }
+        if err := c.BindJSON(&req); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+            return
+        }
+        result := handler.CallFunction(req.Name, req.Args...)
+        c.JSON(http.StatusOK, gin.H{"result": result})
+    })
 
-    handler.RegisterFunction("exampleFunc", "redis.call('SET', 'output', arg)")
-    fmt.Println("Function stored in Redis")
+    r.DELETE("/func/delete", func(c *gin.Context) {
+        var req struct {
+            Name string `json:"name"`
+        }
+        if err := c.BindJSON(&req); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON"})
+            return
+        }
+        handler.DeregisterFunction(req.Name)
+        c.JSON(http.StatusOK, gin.H{"message": "Function deleted successfully"})
+    })
 
-    handler.SubscribeInvoke()
+    r.GET("/func/list", func(c *gin.Context) {
+        functions := handler.ListFunctions()
+        c.JSON(http.StatusOK, gin.H{"functions": functions})
+    })
 
-    time.Sleep(2 * time.Second)
-
-    handler.PublishMessage("invoke.exampleFunc", "This is a test message")
-
-    select {}
+    r.Run(":8080")
 }
